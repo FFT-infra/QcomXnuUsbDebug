@@ -12,7 +12,6 @@
 #include <machine/machine_routines.h>
 #include <kern/cpu_number.h>
 #include <pexpert/pexpert.h>
-#include <libkern/libkern.h>
 
 #define NATIVE_CONTEXT_BYTES DWC3_CONTEXT_BYTES
 #define GCC_BYTES QUD_GCC_BYTES
@@ -225,6 +224,15 @@ static char *append_decimal(char *to, uint64_t value)
     while (n) *to++ = digits[--n];
     return to;
 }
+/* Registers are read as words; decimal would make them unreadable against the manual. */
+static char *append_hex(char *to, uint64_t value)
+{
+    static const char digits[16] = "0123456789abcdef";
+    int shift;
+    for (shift = 60; shift > 0 && !((value >> shift) & 0xfu); shift -= 4) { }
+    for (; shift >= 0; shift -= 4) *to++ = digits[(value >> shift) & 0xfu];
+    return to;
+}
 /* Small in-band accounting records use no printf/console recursion. */
 static size_t loss_record(char *text, int final)
 {
@@ -259,12 +267,38 @@ static void fail(unsigned int error, int core_result)
      * on is the one that failed. boot_progress_stage writes into the diagnostic page the board
      * already draws, so one photograph names the failing precondition. Weak, so a board without
      * that page still links and simply loses the line. */
-    extern void boot_progress_stage(const char *) __attribute__((weak_import));
-    if (&boot_progress_stage) {
-        char line[96];
-        snprintf(line, sizeof line, "QCOM USB refused error=%u core=%d phase=%u",
-                 error, core_result, native.status.phase);
-        boot_progress_stage(line);
+    /* A persistent row, not boot_progress_stage: that ring keeps six lines, and this runs at
+     * time=0s, so the exit log overwrites the line within seconds and a refused controller then
+     * looks exactly like one that never ran. boot_progress_persist redraws every frame.
+     * Built by hand: the module's import audit allows only a fixed set of XNU symbols and
+     * snprintf is not one of them, so the in-band append helpers format the line. */
+    extern void boot_progress_persist(const char *, uint32_t) __attribute__((weak_import));
+    if (&boot_progress_persist) {
+        char line[192];
+        char *p = append_text(line, "QCOM USB REFUSED error=");
+        p = append_decimal(p, error);
+        p = append_text(p, " core=");
+        p = append_decimal(p, (uint64_t)(unsigned int)core_result);
+        /* The domain refusal at error 10 is one of twelve distinct results (QusbDomainOkay=0
+         * through QusbDomainCleanFailed=12 in QcomUsbDmaDomain.h), and which one it is decides
+         * the fix: StreamExists means firmware still owns the stream, NoSlot means the SMMU has
+         * no free context, ReadFailed means the registers did not answer at all. */
+        p = append_text(p, " domain=");
+        p = append_decimal(p, (uint64_t)native.status.domain_result);
+        /* For StreamExists, scan() records what firmware mapped SID 0 to: smr and s2cr.
+         * s2cr bits 17:16 are the memory-access type (0 translation, 1 bypass, 2 fault), and
+         * that decides the fix, so both words are printed. */
+        p = append_text(p, " smr=");
+        p = append_hex(p, native.status.domain_last_address);
+        p = append_text(p, " s2cr=");
+        p = append_hex(p, native.status.domain_last_readback & 0xffffffffu);
+        p = append_text(p, " sctlr=");
+        p = append_hex(p, native.status.domain_last_readback >> 32);
+        p = append_text(p, " ttbr0=");
+        p = append_hex(p, native.status.domain_last_expected);
+        *p = 0;
+        /* 0xffff6600: the amber refusal colour the panel already uses for failures. */
+        boot_progress_persist(line, 0xffff6600u);
     }
 }
 static int in_range(uint64_t address, uint64_t base, uint64_t bytes)
@@ -822,6 +856,14 @@ int qcom_usb_debug_init(void)
     if (usb_diag_mode >= 201u && usb_diag_mode <= 203u) diag_reset(12);
     diag_checkpoint(QCOM_USB_DEBUG_DIAG_ENUM_DONE);
     native.status.phase = QCOM_USB_DEBUG_ACTIVE;
+    /* The success counterpart of fail()'s persistent row. Without it a working controller and a
+     * controller that never ran both leave the row empty, which is the ambiguity this whole
+     * change exists to remove. */
+    {
+        extern void boot_progress_persist(const char *, uint32_t) __attribute__((weak_import));
+        if (&boot_progress_persist)
+            boot_progress_persist("QCOM USB ACTIVE (CDC-ACM up)", 0xff00ff88u);
+    }
     ret = 1;
 out:
     buffer_status_owned();

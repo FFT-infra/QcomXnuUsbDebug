@@ -49,6 +49,9 @@ typedef struct {
   QUSB_U32 index, cb, asid, extended_stream_ids, stream_count, bank_count;
   QUSB_U32 original_cr0, id0, id1, id2, old_smr, old_s2cr;
   QUSB_U32 new_smr, new_s2cr, old_actlr, stage;
+  /* Set when scan() reclaimed a slot whose SID matched but whose target context bank has
+   * translation disabled and no table. Only then may old_smr carry the SMR valid bit. */
+  QUSB_U32 reclaimed;
   QUSB_U32 enable_attempted, tlb_released, tlb_poisoned;
   QUSB_U32 tcr2_preserved, tcr2_observed, tcr2_bound, tcr2_view_owned;
   QUSB_U32 tcr2_format_cba2r, tcr2_format_cbar, tcr2_capture_pending;

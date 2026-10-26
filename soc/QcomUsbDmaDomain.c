@@ -99,7 +99,8 @@ static int lease_shape(const QUSB_DOMAIN_LEASE *l)
      l->cb_base+0x8f4U>QUSB_SMMU_BASE+QUSB_SMMU_BYTES||
      l->new_smr!=(l->extended_stream_ids?QUSB_STREAM_ID:(0x80000000U | QUSB_STREAM_ID))||
      l->new_s2cr!=(l->cb|(l->extended_stream_ids<<10))||
-     (l->extended_stream_ids?(l->old_s2cr&(1U<<10)):(l->old_smr&0x80000000U))) return 0;
+     (!l->reclaimed&&(l->extended_stream_ids?(l->old_s2cr&(1U<<10)):(l->old_smr&0x80000000U)))||
+     l->reclaimed>1) return 0;
   for(i=0;i<QUSB_DOMAIN_REGISTER_COUNT;i++) {
     if(l->regs[i].address!=reg_address(l,i)||l->regs[i].installed!=reg_value(l,i)||
        l->regs[i].width!=((i==4||i==5)?8U:4U)||l->regs[i].touched>1U) return 0;
@@ -223,11 +224,44 @@ static QUSB_DOMAIN_RESULT scan(const QUSB_DOMAIN_PLATFORM *p,QUSB_DOMAIN_LEASE *
     if(l->extended_stream_ids?!(s2cr&(1U<<10)):!(smr&0x80000000U)) {
       if(first==0xffffffffU) {first=i;oldsmr=smr;olds2cr=s2cr;} continue;
     }
-    if(used&&(s2cr&255U)<l->bank_count) used[s2cr&255U]=1;
     mask=(smr>>16)&(l->extended_stream_ids?0xffffU:0x7fffU);
     id=smr&(l->extended_stream_ids?0xffffU:0x7fffU);
+    /* A live mapping owns its context bank; a dead one does not. Marking a dead bank as used
+     * would refuse the only bank the reclaimed stream could then be pointed at. */
+    if(used&&(s2cr&255U)<l->bank_count) used[s2cr&255U]=1;
     if((QUSB_STREAM_ID&~mask)!=(id&~mask))continue;
     matches++;
+    /* Record what firmware actually mapped SID 0 to, so the refusal is not the same for
+     * every cause. S2CR bits 17:16 are the memory-access type: 0 translation, 1 bypass,
+     * 2 fault. last_address/last_readback are otherwise only written by write_value and are
+     * already reported through the status struct, so this reuses them rather than adding
+     * fields to a public ABI or disturbing the old_smr invariant lease_shape enforces. */
+    if(!installed&&matches==1){
+      /* Read-only probe of the mapping firmware already installed, so the caller can report
+       * where it points instead of only that it exists. S2CR bits 7:0 name the context bank;
+       * TTBR0 lives at cb_base+0x20 and SCTLR at cb_base+0. Nothing is written here.
+       * last_readback carries s2cr in its low word and the CB's SCTLR in its high word so both
+       * fit the fields already reported through the status struct. */
+      QUSB_U32 cbb=s2cr&255U,sh=(l->id1>>31)?16U:12U,pg=2U<<((l->id1>>28)&7U),sctlr=0;
+      QUSB_U64 cba=QUSB_SMMU_BASE+(((QUSB_U64)pg+cbb)<<sh),ttbr0=0;
+      l->index=i;l->last_address=smr;
+      if(cbb<l->bank_count&&p->read32(p->cookie,cba,&sctlr)&&
+         p->read64(p->cookie,cba+0x20,&ttbr0)){
+        l->last_expected=ttbr0;
+        l->last_readback=s2cr|((QUSB_U64)sctlr<<32);
+        /* A bank with translation disabled (SCTLR.M=0) and no TTBR0 holds no live mapping:
+         * firmware left the SID programmed but never built a table under it. Reclaim it
+         * rather than refusing, and release its bank for reuse. A bank that does hold a live
+         * mapping is still refused, because nothing here can prove its tables are ours. */
+        if(!(sctlr&1U)&&!ttbr0&&used){
+          if(cbb<l->bank_count) used[cbb]=0;
+          l->reclaimed=1;
+          matches--;
+          if(first==0xffffffffU){first=i;oldsmr=smr;olds2cr=s2cr;}
+          continue;
+        }
+      } else l->last_readback=s2cr;
+    }
     if(!installed||i!=l->index||smr!=l->new_smr||s2cr!=l->new_s2cr)return QusbDomainStreamExists;
   }
   if(installed)return matches==1?QusbDomainOkay:QusbDomainOwnershipChanged;

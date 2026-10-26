@@ -116,7 +116,11 @@ def main():
         external = symbols('--undefined-only') - defined
         allowed = {'_PE_halt_restart', '_PE_parse_boot_argn', '_cpu_number', '_master_cpu',
                    '_ml_io_map', '_ml_static_vtop', '___stack_chk_guard', '___stack_chk_fail',
-                   '_bzero', '_memcpy', '_memset'}
+                   '_bzero', '_memcpy', '_memset',
+                   # Optional: the refusal report goes to the board's diagnostic page when the
+                   # kernel has one. It is a weak_import, so a kernel without boot progress still
+                   # links and simply loses the line.
+                   '_boot_progress_stage', '_boot_progress_persist'}
         if external - allowed:
             raise RuntimeError('unexpected XNU imports: ' + str(sorted(external - allowed)))
         required = {'_qcom_usb_debug_' + s for s in
