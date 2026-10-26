@@ -12,6 +12,7 @@
 #include <machine/machine_routines.h>
 #include <kern/cpu_number.h>
 #include <pexpert/pexpert.h>
+#include <libkern/libkern.h>
 
 #define NATIVE_CONTEXT_BYTES DWC3_CONTEXT_BYTES
 #define GCC_BYTES QUD_GCC_BYTES
@@ -253,6 +254,18 @@ static void fail(unsigned int error, int core_result)
     native.status.core_result = core_result;
     native.status.phase = QCOM_USB_DEBUG_REFUSED;
     native.status.dma_lease_active = native.lease.active;
+    /* Say which check refused, on the panel. The module otherwise gives up silently: no USB
+     * device appears and nothing anywhere says why, because the console it would have reported
+     * on is the one that failed. boot_progress_stage writes into the diagnostic page the board
+     * already draws, so one photograph names the failing precondition. Weak, so a board without
+     * that page still links and simply loses the line. */
+    extern void boot_progress_stage(const char *) __attribute__((weak_import));
+    if (&boot_progress_stage) {
+        char line[96];
+        snprintf(line, sizeof line, "QCOM USB refused error=%u core=%d phase=%u",
+                 error, core_result, native.status.phase);
+        boot_progress_stage(line);
+    }
 }
 static int in_range(uint64_t address, uint64_t base, uint64_t bytes)
 {

@@ -50,8 +50,20 @@ QUSB_RESULT QcomUsbInspectInherited(QUSB_READ32 read32, void *cookie,
   /* CLK_OFF is bit 31 for clk_branch2. A voted clock can be running even
    * when this CPU's enable bit is zero, hence do not require enable bit 0.
    */
+  /* A profile may name how many of the five branches are required. SM8250 runs at high speed
+   * with its SuperSpeed PHY disabled, so the two auxiliary branches can be halted by design;
+   * treating that as a fault refuses a controller the firmware left perfectly usable. */
+#ifdef QUD_GCC_CBCR_REQUIRED
+  {
+    unsigned int required = QUD_GCC_CBCR_REQUIRED;
+    if (required > 5u) required = 5u;
+    for (i = 0; i < required; ++i)
+      if (state->gcc_cbcr[i] & 0x80000000U) return QusbClockOff;
+  }
+#else
   for (i = 0; i < 5; ++i)
     if (state->gcc_cbcr[i] & 0x80000000U) return QusbClockOff;
+#endif
   if (!read32(cookie, QUSB_DWC3_BASE + 0xc120, &state->gsnpsid))
     return QusbReadFailed;
   if (!supported_dwc3(state->gsnpsid))

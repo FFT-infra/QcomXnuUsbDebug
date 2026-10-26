@@ -79,6 +79,13 @@
  * The SM8550 profile's five entries are Kalama offsets and do not apply. */
 #define QUD_GCC_CBCR_OFFSETS {0xf010u, 0xf018u, 0xf01cu, 0xf054u, 0xf058u}
 
+/* The last two CBCRs are the SuperSpeed PHY's auxiliary clocks. This board's
+ * usb_3_ssphy is status = "disabled" in the firmware device tree and the controller runs at
+ * high speed, so those two branches may legitimately read halted: nothing in the firmware
+ * enables them, and refusing the controller because of them would refuse a working port.
+ * The first three are the ones a high-speed gadget needs, and those are still required. */
+#define QUD_GCC_CBCR_REQUIRED 3u
+
 /* Block reset for the primary USB3 wrapper.
  * gcc_sm8250_resets[] :3570  [GCC_USB30_PRIM_BCR] = { 0xf000 } */
 #define QUD_GCC_BCR_OFFSET 0xf000u
