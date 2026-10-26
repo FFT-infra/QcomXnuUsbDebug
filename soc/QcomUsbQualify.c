@@ -34,10 +34,18 @@ QUSB_RESULT QcomUsbInspectInherited(QUSB_READ32 read32, void *cookie,
     return QusbReadFailed;
   if (!read32(cookie, QUSB_GCC_BASE + QUD_GCC_CFG_GDSCR_OFFSET, &state->gcc_cfg_gdscr))
     return QusbReadFailed;
-  /* Live GDSC has qcom,support-cfg-gdscr. Its driver checks CFG_GDSCR
-   * POWER_UP_COMPLETE bit16, not legacy GDSCR.PWR_ON bit31.
+  /* Which bit means "powered" depends on the GDSC's qcom,support-cfg-gdscr flag. With the flag,
+   * Linux's gdsc_check_status() reads CFG_GDSCR.POWER_UP_COMPLETE (bit 16); without it, it reads
+   * the legacy GDSCR.PWR_ON (bit 31). A profile that defines QUD_GDSC_POWER_BIT_LEGACY names the
+   * legacy bit; the SM8250 GDSC is one of those (Sm8250.h records the evidence).
+   * Reading the wrong bit refuses a working controller, which is silent: the module returns
+   * QusbPowerDomainOff, qcom_usb_debug_init() gives up, and the board never enumerates.
    */
+#ifdef QUD_GDSC_POWER_BIT_LEGACY
+  if (!(state->gcc_gdscr & (1U << QUD_GDSC_POWER_BIT_LEGACY))) return QusbPowerDomainOff;
+#else
   if (!(state->gcc_cfg_gdscr & (1U << 16))) return QusbPowerDomainOff;
+#endif
   if (state->gcc_bcr & 1U) return QusbResetAsserted;
   /* CLK_OFF is bit 31 for clk_branch2. A voted clock can be running even
    * when this CPU's enable bit is zero, hence do not require enable bit 0.

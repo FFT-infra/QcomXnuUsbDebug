@@ -101,6 +101,11 @@
  */
 #define QUD_GCC_CFG_GDSCR_OFFSET 0xf008u
 
+/* This profile's GDSC has no qcom,support-cfg-gdscr flag, so the power state is the legacy
+ * GDSCR.PWR_ON bit, not CFG_GDSCR.POWER_UP_COMPLETE. QcomUsbInspectInherited uses this macro to
+ * pick the right bit; a profile that leaves it undefined keeps the CFG_GDSCR check. */
+#define QUD_GDSC_POWER_BIT_LEGACY 31u
+
 /* QSCRATCH inside the wrapper window.
  * Wrapper base 0x0a6f8800 (sm8250.dtsi:4176) + QSCRATCH_HS_PHY_CTRL 0x10
  * (Linux drivers/usb/dwc3/dwc3-qcom.c:26) -> absolute 0x0a6f8810.
