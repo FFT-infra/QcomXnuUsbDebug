@@ -61,6 +61,10 @@ def main():
     p.add_argument('--output', type=Path, required=True, help='new directory under tmp/ or .cache/')
     p.add_argument('--ar', help='llvm-ar executable')
     p.add_argument('--nm', help='llvm-nm executable for import/export audit')
+    p.add_argument('--replace', action='store_true',
+                   help='replace an existing output directory instead of refusing it; '
+                        'for a build driven by the component catalog, where the same path is '
+                        'reused on every incremental pass')
     a = p.parse_args()
     profile = (ROOT / a.soc).resolve()
     if ROOT not in profile.parents or not profile.is_file():
@@ -75,7 +79,11 @@ def main():
         p.error('require ARM64 reference flags')
     ar = a.ar or shutil.which('llvm-ar') or str(Path(flags[0]).parent / 'llvm-ar')
     nm = a.nm or shutil.which('llvm-nm') or str(Path(ar).with_name('llvm-nm'))
-    # Never overwrite an archive/evidence directory from a previous run.
+    # Never overwrite an archive/evidence directory from a previous run unless the caller asks:
+    # the evidence in it is the point of a manual run, while a catalog-driven build reuses one
+    # path on every pass and has to be able to replace its own previous output.
+    if a.replace and out.is_dir():
+        shutil.rmtree(out)
     out.mkdir(parents=True, exist_ok=False)
     defines = ['-I' + str(ROOT), '-I' + str(ROOT / 'kernel'), '-I' + str(ROOT / 'include'),
                '-DQUD_SOC_HEADER="' + profile.relative_to(ROOT).as_posix() + '"',
