@@ -89,38 +89,10 @@ static uint64_t counter(void)
     return value;
 }
 static void diag_reset(unsigned int seconds);
-/* ABL reads one word from IMEM to learn why the SoC reset, and 0x77665500 asks for the
- * bootloader. Without it a PSCI SYSTEM_RESET is an ordinary restart: the phone boots UEFI
- * and the same kernel again, which is why a control-channel REBOOT was acknowledged and
- * then returned to the running system instead of fastboot.
- *
- * Measured on this board 2026-10-24 (image v36): the word written to 0x146bf65c reads back
- * 0x77665500 and the phone comes back to fastboot, not recovery. The address is this SoC's
- * imem restart_reason@65c; the 0x146aa65c in the ios-sweet shim is a different base and
- * does not apply here. A write that cannot be mapped is skipped rather than fatal: the
- * reset still happens, it just does not select the bootloader. */
-#define QUD_IMEM_RESTART_REASON 0x146bf65cULL
-#define QUD_IMEM_REASON_BOOTLOADER 0x77665500U
-static int imem_reason_written;
-
-static int platform_imem_bootloader(void)
-{
-    vm_offset_t mapped;
-    if (imem_reason_written) return 1;
-    mapped = ml_io_map((vm_offset_t)QUD_IMEM_RESTART_REASON, 4);
-    if (!mapped) return 0;
-    *(volatile uint32_t *)mapped = QUD_IMEM_REASON_BOOTLOADER;
-    __asm__ volatile("dsb sy" ::: "memory");
-    if (*(volatile uint32_t *)mapped != QUD_IMEM_REASON_BOOTLOADER) return 0;
-    imem_reason_written = 1;
-    return 1;
-}
-
 static void platform_smc_reset(void)
 {
     /* Existing hardware-qualified final reset sequence. The diagnostic path
      * and the opted-in control callback share this exact clobber contract. */
-    (void)platform_imem_bootloader();
 #if QUD_PSCI_SMC_RESET
     __asm__ volatile("movz w0, #9\nmovk w0, #0x8400, lsl #16\n"
                      "mov x1, xzr\nmov x2, xzr\nmov x3, xzr\ndsb sy\nsmc #0"
@@ -1317,6 +1289,17 @@ size_t qcom_usb_debug_write(const void *bytes, size_t count)
     release(flags); return accepted;
 }
 void qcom_usb_debug_putc(char c) { (void)qcom_usb_debug_write(&c, 1); }
+/* Backlog only: no controller poll, no delay, no lock beyond the local IRQ mask that
+ * backlog_write already takes. A kernel path that holds the name cache or vnode locks
+ * cannot use qcom_usb_debug_write, because in the ACTIVE phase that also polls the
+ * controller and can spin for a millisecond, which stalls every lookup behind it. */
+size_t qcom_usb_debug_enqueue(const void *bytes, size_t count)
+{
+    if (!bytes || !count) return 0;
+    if (native.status.phase == QCOM_USB_DEBUG_DISABLED ||
+        native.status.phase == QCOM_USB_DEBUG_STOPPED) return 0;
+    return backlog_write(bytes, count);
+}
 void qcom_usb_debug_poll(void)
 {
     uint64_t flags;

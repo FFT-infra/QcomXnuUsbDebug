@@ -124,7 +124,7 @@ def main():
         if external - allowed:
             raise RuntimeError('unexpected XNU imports: ' + str(sorted(external - allowed)))
         required = {'_qcom_usb_debug_' + s for s in
-                    ('init', 'write', 'putc', 'poll', 'panic_prepare', 'panic_drain', 'stop', 'get_status',
+                    ('init', 'write', 'putc', 'enqueue', 'poll', 'panic_prepare', 'panic_drain', 'stop', 'get_status',
                      'control_start', 'control_take_reboot', 'control_arm_reboot',
                      'control_reboot_failed', 'wait_drained', 'register_screenshot', 'register_framebuffer')}
         if not required <= defined:

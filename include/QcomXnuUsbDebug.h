@@ -106,6 +106,9 @@ int qcom_usb_debug_init(void);
  * No console, printf, allocation, scheduler or EFI functions are called. */
 void qcom_usb_debug_putc(char c);
 size_t qcom_usb_debug_write(const void *bytes, size_t count);
+/* Backlog only, with no controller poll or delay, for callers that hold a kernel lock.
+ * Use qcom_usb_debug_write everywhere else: it also services the controller. */
+size_t qcom_usb_debug_enqueue(const void *bytes, size_t count);
 /* At most one USB event and a bounded pump; schedule externally if needed. */
 void qcom_usb_debug_poll(void);
 /* Worker-only opt-in. A qualified SoC profile may install the final PSCI
