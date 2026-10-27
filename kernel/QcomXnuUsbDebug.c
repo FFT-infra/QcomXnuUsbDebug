@@ -130,6 +130,50 @@ static void platform_smc_reset(void)
 #endif
     for (;;) __asm__ volatile("wfe" ::: "memory");
 }
+/* Reset straight to the bootloader, skipping the orderly shutdown path.
+ *
+ * reboot_kernel(0, NULL) unmounts every filesystem first, and measured 2026-10-27 that
+ * path panics on this board: vfs_unmountall -> dounmount -> apfs_unmount -> vflush ->
+ * vnode_rele_ext reports "usecount -ve : 4294967295" at vfs_subr.c:2692, because the
+ * SystemOS union mount drops one more reference on the root vnode than it took. The
+ * panic lands before the reset, so the IMEM reason cell is never written and the phone
+ * cannot come back to fastboot.
+ *
+ * This path writes the reason cell and issues PSCI SYSTEM_RESET with no filesystem work
+ * at all. A reset discards nothing that the volumes hold, which is what a reset is. */
+void qcom_usb_debug_control_reset_now(void)
+{
+    /* Report the IMEM write before resetting: the reset itself is silent, so without this
+     * the difference between "the cell was never written" and "it was written but the
+     * bootloader ignored it" is invisible. Measured 2026-10-27: a REBOOT through this path
+     * restarted the kernel instead of returning to fastboot, and the cause could not be
+     * told apart. The backlog is drained first because the reset does not wait for USB. */
+    vm_offset_t probe = ml_io_map((vm_offset_t)QUD_IMEM_RESTART_REASON, 4);
+    uint32_t readback = 0;
+    int written = platform_imem_bootloader();
+    if (probe) readback = *(volatile uint32_t *)probe;
+    {
+        char line[96];
+        char *q = line;
+        const char *text = "QCOM USB REBOOT imem=";
+        while (*text) *q++ = *text++;
+        *q++ = (char)('0' + (written ? 1 : 0));
+        text = " map=";
+        while (*text) *q++ = *text++;
+        *q++ = (char)('0' + (probe ? 1 : 0));
+        text = " read=";
+        while (*text) *q++ = *text++;
+        for (int shift = 28; shift >= 0; shift -= 4)
+            *q++ = "0123456789abcdef"[(readback >> shift) & 0xfu];
+        *q++ = '\n';
+        *q = 0;
+        /* backlog only: this runs with no lock held and must not poll the controller,
+         * which is about to be reset out from under it. */
+        (void)qcom_usb_debug_enqueue(line, (size_t)(q - line));
+    }
+    (void)qcom_usb_debug_wait_drained(200);
+    platform_smc_reset();
+}
 static int qcom_usb_control_halt_restart(unsigned int type)
 {
     if (type == CONTROL_PE_RESTART_CPU &&

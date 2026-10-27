@@ -118,6 +118,9 @@ int qcom_usb_debug_control_start(void);
 int qcom_usb_debug_control_take_reboot(void);
 /* Consume the final restart request only after the ACK and TX backlog drained. */
 int qcom_usb_debug_control_arm_reboot(void);
+/* Write the IMEM bootloader reason cell and issue PSCI SYSTEM_RESET, with no filesystem
+ * unmount. Use this instead of reboot_kernel on a board whose orderly shutdown panics. */
+void qcom_usb_debug_control_reset_now(void);
 void qcom_usb_debug_control_reboot_failed(int result);
 /* Bounded normal-thread drain wait used before reboot_kernel(0, NULL). */
 int qcom_usb_debug_wait_drained(unsigned int timeout_ms);

@@ -14,7 +14,7 @@
  
  #if (DEVELOPMENT || DEBUG)
  #include <kern/debug.h>
-@@ -1287,13 +1294,219 @@ bsdinit_task
+@@ -1287,13 +1294,225 @@ bsdinit_task
  
  	load_init_program(p);
  	lock_trace = 1;
@@ -64,9 +64,15 @@
 +		qcom_usb_debug_control_reboot_failed(-4);
 +		goto out;
 +	}
-+	reboot_result = reboot_kernel(0, NULL);
-+	/* reboot_kernel only returns on failure; clear and report it. */
-+	qcom_usb_debug_control_reboot_failed(reboot_result ? reboot_result : -5);
++	/* Reset directly instead of through reboot_kernel. Measured 2026-10-27:
++	 * reboot_kernel unmounts every filesystem first, and vfs_unmountall panics on this
++	 * board inside apfs_unmount's vflush (vnode_rele_ext usecount -ve at vfs_subr.c:2692),
++	 * because the SystemOS union mount drops one reference on the root vnode too many.
++	 * That panic lands before the reset, so the IMEM reason cell never gets written and
++	 * the phone cannot return to fastboot. This path writes the cell and resets with no
++	 * filesystem work. It does not return. */
++	(void)reboot_result;
++	qcom_usb_debug_control_reset_now();
 +
 +out:
 +	__atomic_store_n(&qcom_usb_reboot_state, 4u, __ATOMIC_RELEASE);
