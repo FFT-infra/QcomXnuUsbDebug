@@ -85,6 +85,7 @@ struct dwc3_snapshot {
 void dwc3_snapshot(struct dwc3 *dev, struct dwc3_snapshot *snapshot);
 /* Stops DMA. Do not release mapping until this succeeds. */
 int dwc3_stop(struct dwc3 *dev);
+int dwc3_recover(struct dwc3 *dev);
 
 /* Descriptor view for host conformance tests and the firmware USB backend.
  * type uses USB descriptor IDs; full_speed selects bulk wMaxPacketSize=64. */

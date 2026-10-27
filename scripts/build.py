@@ -120,7 +120,11 @@ def main():
                    # Optional: the refusal report goes to the board's diagnostic page when the
                    # kernel has one. It is a weak_import, so a kernel without boot progress still
                    # links and simply loses the line.
-                   '_boot_progress_stage', '_boot_progress_persist'}
+                   '_boot_progress_stage', '_boot_progress_persist',
+                   # Optional: the board's own reset path, which maps the IMEM window with
+                   # the attributes the bootloader accepts. Weak, so a board without it
+                   # still links and falls back to this module's plain PSCI reset.
+                   '_boot_reset_bootloader'}
         if external - allowed:
             raise RuntimeError('unexpected XNU imports: ' + str(sorted(external - allowed)))
         required = {'_qcom_usb_debug_' + s for s in

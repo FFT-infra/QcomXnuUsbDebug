@@ -89,38 +89,10 @@ static uint64_t counter(void)
     return value;
 }
 static void diag_reset(unsigned int seconds);
-/* ABL reads one word from IMEM to learn why the SoC reset, and 0x77665500 asks for the
- * bootloader. Without it a PSCI SYSTEM_RESET is an ordinary restart: the phone boots UEFI
- * and this same kernel again, which is why a control-channel REBOOT was acknowledged and
- * then returned to the running system instead of fastboot.
- *
- * Measured on this board 2026-10-24 (image v36): the word written to 0x146bf65c reads back
- * 0x77665500 and the phone comes back to fastboot, not recovery. The address is this SoC's
- * imem restart_reason@65c; the 0x146aa65c in the ios-sweet shim is a different base and
- * does not apply here. A write that cannot be mapped is skipped rather than fatal: the
- * reset still happens, it just does not select the bootloader. */
-#define QUD_IMEM_RESTART_REASON 0x146bf65cULL
-#define QUD_IMEM_REASON_BOOTLOADER 0x77665500U
-static int imem_reason_written;
-
-static int platform_imem_bootloader(void)
-{
-    vm_offset_t mapped;
-    if (imem_reason_written) return 1;
-    mapped = ml_io_map((vm_offset_t)QUD_IMEM_RESTART_REASON, 4);
-    if (!mapped) return 0;
-    *(volatile uint32_t *)mapped = QUD_IMEM_REASON_BOOTLOADER;
-    __asm__ volatile("dsb sy" ::: "memory");
-    if (*(volatile uint32_t *)mapped != QUD_IMEM_REASON_BOOTLOADER) return 0;
-    imem_reason_written = 1;
-    return 1;
-}
-
 static void platform_smc_reset(void)
 {
     /* Existing hardware-qualified final reset sequence. The diagnostic path
      * and the opted-in control callback share this exact clobber contract. */
-    (void)platform_imem_bootloader();
 #if QUD_PSCI_SMC_RESET
     __asm__ volatile("movz w0, #9\nmovk w0, #0x8400, lsl #16\n"
                      "mov x1, xzr\nmov x2, xzr\nmov x3, xzr\ndsb sy\nsmc #0"
@@ -143,35 +115,36 @@ static void platform_smc_reset(void)
  * at all. A reset discards nothing that the volumes hold, which is what a reset is. */
 void qcom_usb_debug_control_reset_now(void)
 {
-    /* Report the IMEM write before resetting: the reset itself is silent, so without this
-     * the difference between "the cell was never written" and "it was written but the
-     * bootloader ignored it" is invisible. Measured 2026-10-27: a REBOOT through this path
-     * restarted the kernel instead of returning to fastboot, and the cause could not be
-     * told apart. The backlog is drained first because the reset does not wait for USB. */
-    vm_offset_t probe = ml_io_map((vm_offset_t)QUD_IMEM_RESTART_REASON, 4);
-    uint32_t readback = 0;
-    int written = platform_imem_bootloader();
-    if (probe) readback = *(volatile uint32_t *)probe;
-    {
-        char line[96];
-        char *q = line;
-        const char *text = "QCOM USB REBOOT imem=";
-        while (*text) *q++ = *text++;
-        *q++ = (char)('0' + (written ? 1 : 0));
-        text = " map=";
-        while (*text) *q++ = *text++;
-        *q++ = (char)('0' + (probe ? 1 : 0));
-        text = " read=";
-        while (*text) *q++ = *text++;
-        for (int shift = 28; shift >= 0; shift -= 4)
-            *q++ = "0123456789abcdef"[(readback >> shift) & 0xfu];
-        *q++ = '\n';
-        *q = 0;
-        /* backlog only: this runs with no lock held and must not poll the controller,
-         * which is about to be reset out from under it. */
-        (void)qcom_usb_debug_enqueue(line, (size_t)(q - line));
+    /* Hand the reset to the board's own implementation instead of writing IMEM here.
+     *
+     * BootReset.c maps the devicetree IMEM window with ml_io_map_unmappable(..., 7)
+     * because ml_io_map hands out permanent io_submap mappings that ml_io_unmap cannot
+     * free, and it reads the cell back and compares against the values the bootloader is
+     * known to accept. Measured 2026-10-27: this module's own 4-byte ml_io_map write
+     * restarted the kernel instead of returning to fastboot, twice.
+     *
+     * boot_reset_bootloader writes the cell, verifies it, then issues PSCI SYSTEM_RESET,
+     * and returns only when something refused; text says what. */
+    extern int boot_reset_bootloader(char *, unsigned) __attribute__((weak_import));
+    if (&boot_reset_bootloader) {
+        char text[160];
+        int rc = boot_reset_bootloader(text, sizeof(text));
+        /* Only reached when it refused, since success resets the SoC. */
+        {
+            char line[192];
+            char *q = line;
+            const char *pre = "QCOM USB REBOOT refused: rc=";
+            while (*pre) *q++ = *pre++;
+            if (rc < 0 || rc > 99) rc = 99;
+            *q++ = (char)('0' + (rc / 10) % 10);
+            *q++ = (char)('0' + rc % 10);
+            *q++ = ' ';
+            for (const char *s = text; *s && q < line + sizeof(line) - 2; ++s) *q++ = *s;
+            *q++ = '\n';
+            (void)qcom_usb_debug_enqueue(line, (size_t)(q - line));
+        }
+        (void)qcom_usb_debug_wait_drained(200);
     }
-    (void)qcom_usb_debug_wait_drained(200);
     platform_smc_reset();
 }
 static int qcom_usb_control_halt_restart(unsigned int type)
@@ -328,6 +301,22 @@ static void loss_notice_owned(void)
     if (DWC3_TX_BYTES - dwc3_queued(native.core) >= bytes &&
         dwc3_queue(native.core, text, bytes) == bytes) usb_log_loss_reported = dropped;
 }
+/* Panel-visible state. The console cannot report its own failure: once dwc3 stops being
+ * serviced the CDC device leaves the bus and every later line is lost, so the only channel
+ * that survives is the frame buffer overlay. BootProgress reads these four. */
+volatile uint32_t qcom_usb_diag_phase, qcom_usb_diag_failed, qcom_usb_diag_recoveries, qcom_usb_diag_dropped;
+static uint32_t usb_recoveries;
+static void usb_diag_update(void)
+{
+    qcom_usb_diag_phase = (uint32_t)native.status.phase;
+    qcom_usb_diag_recoveries = usb_recoveries;
+    qcom_usb_diag_dropped = native.status.dropped;
+    if (native.core_initialized && native.core) {
+        struct dwc3_snapshot snap;
+        dwc3_snapshot(native.core, &snap);
+        qcom_usb_diag_failed = (uint32_t)snap.failed;
+    } else qcom_usb_diag_failed = 0;
+}
 static void fail(unsigned int error, int core_result)
 {
     native.status.error = error;
@@ -346,7 +335,7 @@ static void fail(unsigned int error, int core_result)
      * snprintf is not one of them, so the in-band append helpers format the line. */
     extern void boot_progress_persist(const char *, uint32_t) __attribute__((weak_import));
     if (&boot_progress_persist) {
-        char line[192];
+        char line[384];
         char *p = append_text(line, "QCOM USB REFUSED error=");
         p = append_decimal(p, error);
         p = append_text(p, " core=");
@@ -364,6 +353,29 @@ static void fail(unsigned int error, int core_result)
         p = append_hex(p, native.status.domain_last_address);
         p = append_text(p, " s2cr=");
         p = append_hex(p, native.status.domain_last_readback & 0xffffffffu);
+        /* The endpoint-command timeout that returns -4 from dwc3_init leaves no trace of why:
+         * the controller answered the reset and passed every parameter check, then a DEPSTARTCFG
+         * or DEPCFG never completed. Those commands share exactly one dependency, the event ring
+         * the controller writes completions into, so the register set that decides it is the
+         * event base and its count next to the device state. Read them here, while the MMIO is
+         * still ours: restore_after_failure() runs right after this and gives the lease back. */
+        if (native.core_initialized && native.core) {
+            struct dwc3_snapshot snap;
+            dwc3_snapshot(native.core, &snap);
+            p = append_text(p, " gctl="); p = append_hex(p, snap.gctl);
+            p = append_text(p, " dctl="); p = append_hex(p, snap.dctl);
+            p = append_text(p, " dsts="); p = append_hex(p, snap.dsts);
+            p = append_text(p, " evt="); p = append_decimal(p, snap.event_count);
+            p = append_text(p, " eps="); p = append_decimal(p, snap.enabled_endpoints);
+            p = append_text(p, " iova="); p = append_hex(p, native.status.dma_iova);
+            /* ep_command() reports a non-zero completion status by calling trace() with
+             * (ep << 16) | cmd and the raw DEPCMD result, and core_trace() stores both. That is
+             * the pair that says which endpoint command the controller refused and why, so it
+             * belongs on this line rather than needing a new capture path. */
+            p = append_text(p, " cmd="); p = append_hex(p, native.status.trace_a);
+            p = append_text(p, " st="); p = append_hex(p, native.status.trace_b);
+            p = append_text(p, " tr="); p = append_decimal(p, native.status.traces);
+        }
         p = append_text(p, " sctlr=");
         p = append_hex(p, native.status.domain_last_readback >> 32);
         p = append_text(p, " ttbr0=");
@@ -955,7 +967,22 @@ static int poll_owned(void)
     native.status.poll_calls++;
     native.status.last_poll_events = ret < 0 ? 0u : (uint32_t)ret;
     buffer_status_owned();
+    usb_diag_update();
     if (ret < 0 || native.status.io_failed) {
+        /* Recover before reporting. dwc3_poll latches d->failed and nothing cleared it, so a
+         * single bad poll used to end the console permanently: the phase became IO_FAILED, the
+         * worker thread exited on its next status read, nothing drained the event ring or
+         * answered IN tokens, and the host reset the port (the CDC device left the bus at
+         * t=5 s, 35 s and 110 s in different boots while the system kept running). Bringing the
+         * controller back here keeps the phase ACTIVE, so the worker never sees the failure.
+         * The budget stops a genuinely dead controller from spinning forever. */
+        if (usb_recoveries < 64u && dwc3_recover(native.core) == 0) {
+            usb_recoveries++;
+            native.status.io_failed = 0;
+            native.status.core_result = 0;
+            native.status.error = 0;
+            return 1;
+        }
         native.status.core_result = ret;
         native.status.error = native.deadline_active && native.deadline_expired ? QCOM_USB_DEBUG_DEADLINE_EXPIRED :
                                                       QCOM_USB_DEBUG_CORE_POLL_FAILED;
@@ -1340,6 +1367,24 @@ size_t qcom_usb_debug_write(const void *bytes, size_t count)
     size_t accepted = 0;
     if (!bytes || !count || native.status.phase == QCOM_USB_DEBUG_DISABLED ||
         native.status.phase == QCOM_USB_DEBUG_STOPPED) return 0;
+    /* Recovery. poll_owned() latches IO_FAILED and nothing else clears it, so a single failed
+     * DWC3 poll silences the console for the rest of the boot while the machine keeps running:
+     * measured 2026-10-28, silence at t=35 s in one boot and t=110 s in another, with the home
+     * screen still appearing after both. That turned every later diagnosis into guesswork.
+     * Retry one poll at a bounded interval; poll_owned() puts the phase back to ACTIVE itself
+     * when the controller answers again. */
+    if (native.status.phase == QCOM_USB_DEBUG_IO_FAILED) {
+        static uint32_t recover_budget;
+        if (++recover_budget >= 256u) {
+            recover_budget = 0;
+            if (acquire(&flags)) {
+                native.status.io_failed = 0;
+                native.status.phase = QCOM_USB_DEBUG_ACTIVE;
+                (void)poll_owned();
+                release(flags);
+            }
+        }
+    }
     accepted = backlog_write(bytes, count);
     if (native.status.phase != QCOM_USB_DEBUG_ACTIVE || !acquire(&flags)) return accepted;
     if (native.status.phase == QCOM_USB_DEBUG_ACTIVE) {

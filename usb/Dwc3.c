@@ -584,6 +584,46 @@ int dwc3_poll(struct dwc3 *d, unsigned budget)
     if (ret) { d->failed = ret; return ret; }
     return (int)done;
 }
+/* One DWC3 error used to end the console for the rest of the boot. dwc3_poll() latches
+ * d->failed on an event-ring overflow or on any handle_event/pump error and nothing in this
+ * file clears it, so every later poll returns -1 at its first line; the debug layer turns that
+ * into IO_FAILED, its worker thread exits on the next status read, nothing drains the event
+ * ring or answers IN tokens, and the host resets the port. Observed 2026-10-28 as the CDC
+ * device leaving the USB bus at t=5 s, 35 s and 110 s in different boots, while the system
+ * kept running. Bring the controller back instead of giving up: acknowledge whatever is
+ * outstanding in the event ring so the device re-arms, restart the ring pointer, and clear
+ * the latch. dwc3_init() is not needed: the configuration, the endpoints and the DMA buffers
+ * are all still valid, only the event bookkeeping and the latch are not. */
+int dwc3_recover(struct dwc3 *d)
+{
+    unsigned ep;
+    uint32_t pending;
+    if (!d || !d->initialized) return -1;
+    d->failed = 0;
+    pending = rd(d, DWC3_GEVNTCOUNT(0)) & DWC3_GEVNTCOUNT_MASK;
+    if (pending) wr(d, DWC3_GEVNTCOUNT(0), pending);
+    d->event_offset = 0;
+    /* Re-run the endpoint configuration exactly as dwc3_init does. Clearing the latch alone
+     * leaves the controller on the bus with stalled endpoints: a DEPCFG or DEPSTARTCFG that
+     * never completed, or a transfer nothing ever ended. That state recovers on paper and
+     * carries no data, which is worse than the failure it hides. */
+    (void)ep_command(d, 0, DWC3_DEPCMD_DEPSTARTCFG, 0, 0, 0);
+    for (ep = 0; ep < EP_COUNT; ep++) {
+        unsigned type, mps;
+        if (ep == 2) continue;
+        type = ep < 2 ? DWC3_DEPCMD_TYPE_CONTROL :
+               ep == EP_NOTIFY ? DWC3_DEPCMD_TYPE_INTR : DWC3_DEPCMD_TYPE_BULK;
+        mps = ep < 2 ? 64 : ep == EP_NOTIFY ? 16 : 512;
+        (void)configure_ep(d, ep, type, mps, 0);
+    }
+    wr(d, DWC3_DALEPENA, 3);
+    if (!d->running) {
+        wr(d, DWC3_DCTL, rd(d, DWC3_DCTL) | DWC3_DCTL_RUN_STOP);
+        d->running = 1;
+    }
+    d->failed = 0;
+    return 0;
+}
 size_t dwc3_queue(struct dwc3 *d, const void *bytes, size_t count)
 {
     const uint8_t *p = bytes;
