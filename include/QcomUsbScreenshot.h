@@ -6,7 +6,7 @@
 #ifndef QUD_SCREENSHOT_MAX_BYTES
 #define QUD_SCREENSHOT_MAX_BYTES (16u * 1024u * 1024u)
 #endif
-#define QUD_SCREENSHOT_CHUNK 192u
+#define QUD_SCREENSHOT_CHUNK 768u
 #define QUD_SCREENSHOT_MAX_DIMENSION 4096u
 struct qcom_usb_screenshot_info {
     uint32_t width, height, bytes, encoded_bytes, crc32, frame;

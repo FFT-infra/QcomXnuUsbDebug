@@ -12,7 +12,7 @@
 /* The newline is part of the 128-byte request-frame ceiling. */
 #define SXNU_CONTROL_FRAME_BYTES 128u
 #define SXNU_CONTROL_LINE_BYTES 127u
-#define SXNU_CONTROL_REPLY_BYTES 512u
+#define SXNU_CONTROL_REPLY_BYTES 2048u
 #define SXNU_CONTROL_WORK_BYTES 256u
 #define SXNU_CONTROL_SESSION_HEX 16u
 #define SXNU_CONTROL_SEQ_HEX 8u
