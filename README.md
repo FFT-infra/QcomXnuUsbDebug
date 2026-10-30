@@ -41,3 +41,22 @@ python3 scripts/screenshot.py --socket <capture>/usb-control.sock --output <new-
 启用前，固件需要完成 USB 供电、时钟和 PHY 初始化。模块按单例轮询运行，使用有限的静态缓冲区；断连和深度休眠的支持范围见边界文档。控制协议限于文档列出的命令，不提供 GDB/KDP、远程 shell 或任意内存访问。
 
 驱动独立维护，设备通过 `drivers/QcomXnuUsbDebug` 子模块引用，远程仓库使用 `unixnu` topic。设备维护者负责 catalog、锁定提交和归档接入。当前代码尚未接入活动设备；原始采集证据保留在来源工作区。
+
+## This fork
+
+[FFT-infra/QcomXnuUsbDebug](https://github.com/FFT-infra/QcomXnuUsbDebug) is
+the fork used by the Redmi K40 (`alioth`, SM8250-AC) port. Its `alioth-usb`
+branch is what the device repository pins. Upstream's backend was written
+against the firmware-prepared USB state on SM8550 and kernel patches for
+Darwin 22 / XNU 8796.141.3; this board runs SM8250 with Darwin 23.6.0 /
+xnu-10063.141.1.
+
+Changes on this branch:
+
+- Larger screenshot chunk and control reply (`18bcc38`).
+- The DWC3 recoverable-failure path and the IMEM bootloader reset diagnostics.
+- SM8250 stream selection and the IMEM reason cell on reset.
+
+Device page: <https://unixnu.com/zh/devices/alioth>.
+Porting record: [`../UniXNU-alioth/porting.toml`](../UniXNU-alioth/porting.toml).
+
